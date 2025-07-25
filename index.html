@@ -1,51 +1,177 @@
 <!DOCTYPE html>
 <html lang="pl">
 <head>
-    <meta charset="UTF-8">
-    <title>Krypto AI – Predykcja ML</title>
-    <link rel="manifest" href="manifest.json">
-    <script>
-      if ("serviceWorker" in navigator) {
-        window.addEventListener("load", () => {
-          navigator.serviceWorker.register("sw.js");
-        });
-      }
-    </script>
-    <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.16.0/dist/tf.min.js"></script>
-    <style>
-        body { font-family: sans-serif; text-align: center; background: #f4f4f4; padding: 2em; }
-        input, select, button { margin: 0.5em; padding: 0.5em; font-size: 1em; }
-        #chart { width: 90%; height: 500px; margin: auto; }
-        table { border-collapse: collapse; width: 90%; margin: 2em auto; }
-        th, td { border: 1px solid #ccc; padding: 8px; font-size: 0.9em; }
-        th { background: #eee; }
-    </style>
+  <meta charset="UTF-8">
+  <title>Krypto AI – Predykcja ML</title>
+  <link rel="manifest" href="manifest.json">
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js');
+      });
+    }
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.16.0/dist/tf.min.js"></script>
+  <style>
+    body { font-family: sans-serif; background: #f4f4f4; text-align: center; padding: 2em; }
+    input, select, button { padding: 0.5em; margin: 0.5em; font-size: 1em; }
+    #chart { width: 90%; height: 400px; margin: 1em auto; }
+    table { margin: auto; width: 90%; border-collapse: collapse; }
+    th, td { border: 1px solid #ccc; padding: 6px; }
+    .positive { color: green; }
+    .negative { color: red; }
+    .neutral { color: gray; }
+  </style>
 </head>
 <body>
-    <h1>📈 Krypto AI – Predykcja ML</h1>
-    <p>Wpisz nazwę coina (np. <strong>BTC</strong>) – zawsze względem <strong>USDC</strong></p>
+  <h1>📈 Krypto AI – Predykcja ML</h1>
+  <p>Podaj nazwę coina (np. BTC) — zawsze względem USDC</p>
+  <input id="base" placeholder="BTC, ETH..." value="BTC">
+  <select id="interval">
+    <option value="15m">15 minut</option>
+    <option value="30m">30 minut</option>
+    <option value="1h" selected>1 godzina</option>
+    <option value="1d">1 dzień</option>
+  </select>
+  <button onclick="load()">🔮 Pokaż dane</button>
+  <div id="chart"></div>
+  <div id="predictionResult"></div>
 
-    <input id="base" placeholder="BTC, ETH, DOGE..." value="BTC" />
-    <select id="interval">
-        <option value="15m">15 minut</option>
-        <option value="30m">30 minut</option>
-        <option value="1h" selected>1 godzina</option>
-        <option value="1d">1 dzień</option>
-    </select>
-    <button onclick="load()">🔮 Pokaż dane</button>
+  <script>
+    const intervalMap = { 
+      "15m": 15 * 60, 
+      "30m": 30 * 60, 
+      "1h": 60 * 60, 
+      "1d": 24 * 60 * 60 
+    };
 
-    <div id="chart"></div>
-    <div id="confidence" style="margin-top: 1em; font-size: 1.1em;"></div>
-    <div id="predictionChange" style="margin-top: 0.5em; font-size: 1em;"></div>
-    <div id="decision"></div>
-    <div id="priceTable"></div>
-    <button onclick="saveCSV()">💾 Zapisz dane (.csv)</button>
+    async function trainAndPredict(prices, windowSize = 10) {
+      const close = prices.map(p => p.close);
+      const xs = [], ys = [];
 
-    <!-- JavaScript logic below (identyczna jak poprzednio, pominięta tutaj dla zwięzłości) -->
-    <script>
-    // Kod JS jak wcześniej — ten sam
-    console.log("Aplikacja załadowana poprawnie");
-    </script>
+      for (let i = 0; i < close.length - windowSize; i++) {
+        xs.push(close.slice(i, i + windowSize));
+        ys.push(close[i + windowSize]);
+      }
+
+      const inputTensor = tf.tensor2d(xs);
+      const labelTensor = tf.tensor1d(ys);
+
+      const model = tf.sequential();
+      model.add(tf.layers.dense({ inputShape: [windowSize], units: 32, activation: 'relu' }));
+      model.add(tf.layers.dense({ units: 1 }));
+      model.compile({ loss: 'meanSquaredError', optimizer: 'adam' });
+
+      await model.fit(inputTensor, labelTensor, { epochs: 30, verbose: 0 });
+
+      const lastInput = close.slice(-windowSize);
+      const prediction = model.predict(tf.tensor2d([lastInput]));
+      const predictedValue = (await prediction.data())[0];
+
+      return predictedValue;
+    }
+
+    async function load() {
+      try {
+        const base = document.getElementById('base').value.toUpperCase();
+        const interval = document.getElementById('interval').value;
+        const symbol = base + "USDC";
+
+        const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=100`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Nie udało się pobrać danych z Binance.");
+
+        const raw = await res.json();
+        const data = raw.map(d => ({
+          time: d[0] / 1000,
+          open: +d[1],
+          high: +d[2],
+          low: +d[3],
+          close: +d[4]
+        }));
+
+        // Usuń poprzedni wykres jeśli istnieje
+        const chartContainer = document.getElementById("chart");
+        chartContainer.innerHTML = '';
+        const chart = LightweightCharts.createChart(chartContainer, {
+          width: chartContainer.clientWidth,
+          height: 400,
+          layout: {
+            backgroundColor: '#f4f4f4',
+            textColor: '#333',
+          },
+          grid: {
+            vertLines: { color: '#eee' },
+            horzLines: { color: '#eee' },
+          },
+        });
+
+        // Seria dla danych historycznych
+        const historicalSeries = chart.addLineSeries({
+          color: '#2962FF',
+          lineWidth: 2,
+          title: 'Dane historyczne',
+        });
+        historicalSeries.setData(data.map(d => ({ time: d.time, value: d.close })));
+
+        // Predykcja
+        const pred = await trainAndPredict(data);
+        const lastTime = data[data.length - 1].time;
+        const nextTime = lastTime + intervalMap[interval];
+
+        // Seria dla predykcji
+        const predictionSeries = chart.addLineSeries({
+          color: '#FF6D00',
+          lineWidth: 2,
+          lineStyle: 2, // Kreskowana
+          title: 'Predykcja',
+        });
+        predictionSeries.setData([
+          { time: lastTime, value: data[data.length - 1].close },
+          { time: nextTime, value: pred }
+        ]);
+
+        // Dodanie znacznika
+        predictionSeries.setMarkers([
+          {
+            time: nextTime,
+            position: 'belowBar',
+            color: '#FF6D00',
+            shape: 'arrowUp',
+            text: `Przewidywanie: ${pred.toFixed(4)}`
+          }
+        ]);
+
+        // Wyniki tekstowe
+        const last = data[data.length - 1].close;
+        const diff = ((pred - last) / last * 100).toFixed(2);
+        let decision, decisionClass;
+        if (diff > 1) {
+          decision = "💹 Kupuj";
+          decisionClass = "positive";
+        } else if (diff < -1) {
+          decision = "⚠️ Sprzedaj";
+          decisionClass = "negative";
+        } else {
+          decision = "⏸ Wstrzymaj się";
+          decisionClass = "neutral";
+        }
+
+        document.getElementById("predictionResult").innerHTML = `
+          <h3>🤖 Predykcja AI</h3>
+          <p>Aktualna cena: <b>${last.toFixed(4)}</b></p>
+          <p>Przewidywana cena: <b>${pred.toFixed(4)}</b></p>
+          <p>Zmiana: <b class="${decisionClass}">${diff}%</b></p>
+          <p>Rekomendacja: <b class="${decisionClass}">${decision}</b></p>
+        `;
+
+        // Dopasowanie wykresu do danych
+        chart.timeScale().fitContent();
+      } catch (error) {
+        alert(error.message);
+      }
+    }
+  </script>
 </body>
 </html>
